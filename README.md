@@ -129,11 +129,11 @@ To implement your own routing algorithm, modify the `route_package` function in 
 def route_package(state: GameState, package: Package) -> Optional[str]:
     """
     Determine the next FC to route a package to.
-    
+
     Args:
         state: GameState object containing the current state of the network
         package: Package object containing information about the package
-        
+
     Returns:
         next_fc_id: ID of the next FC to route the package to, or None to stay at current FC
     """
