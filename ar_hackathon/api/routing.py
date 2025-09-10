@@ -24,6 +24,11 @@ _adaptive_params = {
     'load_balance_factor': 0.4
 }
 
+# Predictive analytics data structures
+_connection_history = {}  # Track historical usage patterns
+_package_patterns = {}    # Track package routing patterns
+_time_step_history = []   # Track network state over time
+
 class PriorityQueue:
     """Simple priority queue implementation without external libraries."""
 
@@ -77,19 +82,18 @@ def _get_connection_usage(state):
 
 def _calculate_heuristic(current_fc: str, destination_fc: str, adj: Dict) -> float:
     """
-    Calculate heuristic distance for A* algorithm.
-    Uses a simple distance estimation based on network topology.
+    Calculate advanced heuristic distance for A* algorithm.
+    Uses multiple strategies for better path estimation.
     """
     if current_fc == destination_fc:
         return 0.0
 
-    # Simple heuristic: estimate minimum possible distance
-    # This could be improved with actual geographic coordinates if available
+    # Strategy 1: BFS-based minimum distance estimation
     visited = set()
     queue = [(current_fc, 0)]
     min_distance = float('inf')
 
-    while queue and len(visited) < 10:  # Limit search for performance
+    while queue and len(visited) < 15:  # Increased search depth
         fc, dist = queue.pop(0)
         if fc in visited:
             continue
@@ -103,7 +107,137 @@ def _calculate_heuristic(current_fc: str, destination_fc: str, adj: Dict) -> flo
             if neighbor_fc not in visited:
                 queue.append((neighbor_fc, dist + weight))
 
-    return min_distance if min_distance != float('inf') else 10.0
+    # Strategy 2: Network topology analysis
+    # Estimate based on network connectivity patterns
+    current_connections = len(adj.get(current_fc, []))
+    dest_connections = len(adj.get(destination_fc, []))
+
+    # Higher connectivity suggests better path options
+    connectivity_factor = 1.0
+    if current_connections > 5 and dest_connections > 5:
+        connectivity_factor = 0.8  # More connected = potentially shorter paths
+    elif current_connections < 2 or dest_connections < 2:
+        connectivity_factor = 1.3  # Less connected = potentially longer paths
+
+    # Strategy 3: Weight-based estimation
+    # Use average connection weights to estimate distance
+    avg_weight = 0
+    total_weights = 0
+    for fc_id, connections in adj.items():
+        for _, weight, _ in connections:
+            avg_weight += weight
+            total_weights += 1
+
+    if total_weights > 0:
+        avg_weight /= total_weights
+        weight_estimate = avg_weight * 3  # Estimate 3-hop average path
+    else:
+        weight_estimate = 10.0
+
+    # Combine strategies with weighted average
+    bfs_estimate = min_distance if min_distance != float('inf') else weight_estimate
+    final_estimate = (bfs_estimate * 0.7 + weight_estimate * 0.3) * connectivity_factor
+
+    return max(1.0, final_estimate)  # Ensure minimum heuristic value
+
+def _update_predictive_analytics(state: GameState):
+    """
+    Update predictive analytics data structures with current network state.
+    """
+    global _connection_history, _package_patterns, _time_step_history
+
+    current_time = state.current_time_step
+    connection_usage = _get_connection_usage(state)
+
+    # Update connection history
+    for connection_key, usage in connection_usage.items():
+        if connection_key not in _connection_history:
+            _connection_history[connection_key] = []
+        _connection_history[connection_key].append((current_time, usage))
+
+        # Keep only recent history (last 50 time steps)
+        if len(_connection_history[connection_key]) > 50:
+            _connection_history[connection_key] = _connection_history[connection_key][-50:]
+
+    # Update package patterns
+    for package in state.active_packages:
+        if package.current_fc != package.destination_fc:
+            pattern_key = (package.current_fc, package.destination_fc)
+            if pattern_key not in _package_patterns:
+                _package_patterns[pattern_key] = []
+            _package_patterns[pattern_key].append(current_time)
+
+            # Keep only recent patterns
+            if len(_package_patterns[pattern_key]) > 100:
+                _package_patterns[pattern_key] = _package_patterns[pattern_key][-100:]
+
+    # Update time step history
+    _time_step_history.append({
+        'time': current_time,
+        'active_packages': len(state.active_packages),
+        'total_usage': sum(connection_usage.values())
+    })
+
+    # Keep only recent history
+    if len(_time_step_history) > 100:
+        _time_step_history = _time_step_history[-100:]
+
+def _predict_connection_congestion(connection_key: Tuple[str, str], time_steps_ahead: int = 5) -> float:
+    """
+    Predict future congestion on a connection based on historical patterns.
+    Returns predicted usage level (0.0 to 1.0+).
+    """
+    if connection_key not in _connection_history:
+        return 0.0
+
+    history = _connection_history[connection_key]
+    if len(history) < 3:
+        return 0.0
+
+    # Simple trend analysis
+    recent_usage = [usage for _, usage in history[-5:]]
+    if len(recent_usage) < 2:
+        return recent_usage[0] if recent_usage else 0.0
+
+    # Calculate trend
+    trend = (recent_usage[-1] - recent_usage[0]) / len(recent_usage)
+
+    # Predict future usage
+    current_usage = recent_usage[-1]
+    predicted_usage = current_usage + (trend * time_steps_ahead)
+
+    return max(0.0, predicted_usage)
+
+def _predict_package_arrival_patterns(source_fc: str, dest_fc: str) -> float:
+    """
+    Predict likelihood of new packages arriving on a route.
+    Returns urgency factor (higher = more urgent to route quickly).
+    """
+    pattern_key = (source_fc, dest_fc)
+    if pattern_key not in _package_patterns:
+        return 1.0
+
+    patterns = _package_patterns[pattern_key]
+    if len(patterns) < 3:
+        return 1.0
+
+    # Calculate average time between packages on this route
+    time_diffs = [patterns[i+1] - patterns[i] for i in range(len(patterns)-1)]
+    if not time_diffs:
+        return 1.0
+
+    avg_interval = sum(time_diffs) / len(time_diffs)
+    current_time = _time_step_history[-1]['time'] if _time_step_history else 0
+    last_package_time = patterns[-1]
+
+    # If it's been a while since last package, urgency is lower
+    time_since_last = current_time - last_package_time
+    if time_since_last > avg_interval * 2:
+        return 0.5  # Lower urgency
+    elif time_since_last < avg_interval * 0.5:
+        return 2.0  # Higher urgency
+
+    return 1.0  # Normal urgency
 
 def _adaptive_parameter_adjustment(state: GameState):
     """
@@ -164,9 +298,9 @@ def _simulate_future_usage(state, current_package, proposed_path):
 
     return future_usage
 
-def _evaluate_path_quality(adj, path, connection_usage, future_usage):
+def _evaluate_path_quality(adj, path, connection_usage, future_usage, package=None):
     """
-    Evaluate the quality of a path considering current and future congestion.
+    Evaluate the quality of a path considering current, future, and predicted congestion.
     Returns a score (lower is better).
     """
     if len(path) < 2:
@@ -175,10 +309,12 @@ def _evaluate_path_quality(adj, path, connection_usage, future_usage):
     total_cost = 0
     bottleneck_penalty = 0
     load_balance_bonus = 0
+    predictive_bonus = 0
 
     for i in range(len(path) - 1):
         from_fc = path[i]
         to_fc = path[i + 1]
+        connection_key = (from_fc, to_fc)
 
         # Find the connection details
         weight = float('inf')
@@ -195,8 +331,8 @@ def _evaluate_path_quality(adj, path, connection_usage, future_usage):
         total_cost += weight
 
         # Calculate congestion penalties
-        current_usage = connection_usage.get((from_fc, to_fc), 0)
-        future_usage_count = future_usage.get((from_fc, to_fc), 0)
+        current_usage = connection_usage.get(connection_key, 0)
+        future_usage_count = future_usage.get(connection_key, 0)
 
         # Current congestion penalty
         if bandwidth != float('inf') and current_usage > 0:
@@ -216,7 +352,24 @@ def _evaluate_path_quality(adj, path, connection_usage, future_usage):
             elif future_usage_count < bandwidth * 0.3:
                 load_balance_bonus -= weight * _adaptive_params['load_balance_factor'] * 0.1
 
-    return total_cost + bottleneck_penalty + load_balance_bonus
+        # Predictive analytics bonus/penalty
+        if package:
+            # Predict future congestion on this connection
+            predicted_congestion = _predict_connection_congestion(connection_key, 3)
+            if predicted_congestion > 0:
+                if bandwidth != float('inf'):
+                    predicted_ratio = predicted_congestion / bandwidth
+                    if predicted_ratio > 0.7:  # Predicted to be congested
+                        predictive_bonus += weight * predicted_ratio * 0.3
+                    elif predicted_ratio < 0.3:  # Predicted to be clear
+                        predictive_bonus -= weight * 0.1
+
+    # Package arrival pattern urgency
+    urgency_factor = 1.0
+    if package and len(path) >= 2:
+        urgency_factor = _predict_package_arrival_patterns(path[0], path[-1])
+
+    return (total_cost + bottleneck_penalty + load_balance_bonus + predictive_bonus) * urgency_factor
 
 def _find_shortest_path_with_lookahead(adj, start, end, connection_usage, state, current_package):
     """
@@ -247,9 +400,9 @@ def _find_shortest_path_with_lookahead(adj, start, end, connection_usage, state,
         visited.add(current_fc)
 
         if current_fc == end:
-            # Evaluate this complete path
+            # Evaluate this complete path with predictive analytics
             future_usage = _simulate_future_usage(state, current_package, path)
-            path_score = _evaluate_path_quality(adj, path, connection_usage, future_usage)
+            path_score = _evaluate_path_quality(adj, path, connection_usage, future_usage, current_package)
 
             if path_score < best_score:
                 best_score = path_score
@@ -296,7 +449,7 @@ def _find_shortest_path(adj, start, end, connection_usage):
 
 def _get_optimal_next_hop(state, package):
     """
-    Find the optimal next hop for a package using advanced lookahead algorithm.
+    Find the optimal next hop for a package using advanced lookahead algorithm with predictive analytics.
     """
     global _path_cache, _network_hash
 
@@ -307,43 +460,59 @@ def _get_optimal_next_hop(state, package):
     if current_fc == destination_fc:
         return None
 
+    # Update predictive analytics
+    _update_predictive_analytics(state)
+
     # Adjust parameters based on current network conditions
     _adaptive_parameter_adjustment(state)
 
     # For lookahead algorithm, we need to consider current network state
-    # Use a simplified cache key that's more likely to hit
+    # Use a more sophisticated cache key that includes predictive factors
     current_hash = _get_network_hash(state)
     connection_usage = _get_connection_usage(state)
 
-    # Create a simplified cache key (less specific for better hit rate)
-    # Only include high-level congestion info, not exact usage counts
+    # Create enhanced cache key with predictive factors
     high_congestion_connections = sum(1 for key, usage in connection_usage.items()
-                                    if usage > 5)  # Threshold for "high congestion"
-    cache_key = (current_fc, destination_fc, current_hash, high_congestion_connections)
+                                    if usage > 5)
 
-    # Check cache first
+    # Add predictive factors to cache key
+    predicted_congestion_level = 0
+    if (current_fc, destination_fc) in _package_patterns:
+        predicted_congestion_level = len(_package_patterns[(current_fc, destination_fc)][-10:])
+
+    cache_key = (current_fc, destination_fc, current_hash, high_congestion_connections,
+                predicted_congestion_level, state.current_time_step // 10)  # Time-based cache invalidation
+
+    # Check cache first with time-based validation
     if cache_key in _path_cache:
-        path = _path_cache[cache_key]
-        if len(path) > 1:
-            return path[1]  # Return next hop
-        return None
+        cached_path, cache_time = _path_cache[cache_key]
+        # Cache is valid for 5 time steps
+        if state.current_time_step - cache_time <= 5:
+            if len(cached_path) > 1:
+                return cached_path[1]  # Return next hop
+            return None
 
     # Build adjacency list
     adj = _build_adjacency_list(state)
 
-    # Find shortest path with lookahead
+    # Find shortest path with lookahead and predictive analytics
     path = _find_shortest_path_with_lookahead(adj, current_fc, destination_fc,
                                             connection_usage, state, package)
 
-    # Cache the result with improved cache management
-    if len(_path_cache) < 2000:  # Increased cache size
-        _path_cache[cache_key] = path
+    # Cache the result with timestamp and improved cache management
+    if len(_path_cache) < 3000:  # Further increased cache size
+        _path_cache[cache_key] = (path, state.current_time_step)
     else:
-        # Simple cache eviction: remove oldest 20% of entries
-        keys_to_remove = list(_path_cache.keys())[:len(_path_cache)//5]
+        # Smart cache eviction: remove oldest entries and low-usage entries
+        cache_items = list(_path_cache.items())
+        cache_items.sort(key=lambda x: x[1][1])  # Sort by timestamp
+
+        # Remove oldest 30% of entries
+        keys_to_remove = [key for key, _ in cache_items[:len(cache_items)//3]]
         for key in keys_to_remove:
             del _path_cache[key]
-        _path_cache[cache_key] = path
+
+        _path_cache[cache_key] = (path, state.current_time_step)
 
     # Return next hop if path exists and has more than one node
     if len(path) > 1:
@@ -490,8 +659,8 @@ def _evaluate_alternative_paths(state, package):
         # Simulate future usage for this path
         future_usage = _simulate_future_usage(state, package, two_hop_path)
 
-        # Evaluate this path
-        path_score = _evaluate_path_quality(adj, two_hop_path, connection_usage, future_usage)
+        # Evaluate this path with predictive analytics
+        path_score = _evaluate_path_quality(adj, two_hop_path, connection_usage, future_usage, package)
 
         # Add bonus for paths that get closer to destination
         # (This is a heuristic - in a real implementation you'd want more sophisticated distance calculation)
